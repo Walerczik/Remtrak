@@ -2,6 +2,7 @@ import asyncio
 import logging
 import datetime
 import aiosqlite
+import html  # Для экранирования спецсимволов
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
@@ -60,7 +61,8 @@ async def init_db():
 
 def get_text(user_id, key, **kwargs):
     lang = user_lang.get(user_id, "ru")
-    return LANGS[lang][key].format(**kwargs)
+    text = LANGS[lang][key].format(**kwargs)
+    return html.escape(text)  # Экранируем спецсимволы
 
 
 @dp.message(F.text == '/start')
@@ -72,7 +74,7 @@ async def cmd_start(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="Polski", callback_data="lang_pl")]
         ]
     )
-    await message.answer(LANGS["ru"]["choose_lang"], reply_markup=kb)
+    await message.answer(get_text(message.from_user.id, "choose_lang"), reply_markup=kb)
 
 
 @dp.callback_query(F.data.startswith("lang_"))
