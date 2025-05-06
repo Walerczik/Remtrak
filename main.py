@@ -10,7 +10,7 @@ import os
 
 API_TOKEN = '7555068676:AAGPHintUgIJYmgyTnJPkDrKEYco3dsqwA4'
 WEBHOOK_PATH = '/webhook'
-WEBHOOK_URL = 'https://your-render-url.onrender.com' + WEBHOOK_PATH  # Заменить на свой URL
+WEBHOOK_URL = 'https://remtrak.onrender.com/webhook' + WEBHOOK_PATH  # Заменить на свой URL
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
