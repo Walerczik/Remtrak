@@ -1,6 +1,6 @@
 aiogram==3.6.0
-fastapi==0.95.1
+fastapi==0.100.0  # Обновленная версия FastAPI, совместимая с Pydantic 2.x
 aiohttp==3.9.5
 uvicorn==0.18.3
-pydantic==2.7.4  # Совместим с aiogram 3.6.0
+pydantic==2.7.4
 aiofiles==23.2.1
