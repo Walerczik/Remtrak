@@ -1,90 +1,209 @@
+import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.middlewares.logging import LoggingMiddleware
+import html
 
-from aiogram.utils import executor
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.executor import start_webhook
 
-API_TOKEN = '7555068676:AAGPHintUgIJYmgyTnJPkDrKEYco3dsqwA4'
-ADMIN_ID = 6909254042
+import config
+import database
 
+# — Логирование
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
-
-dp.middleware.setup(LoggingMiddleware())  # Это будет работать без ошибок
-
-# Главная клавиатура
-main_keyboard = ReplyKeyboardMarkup(resize_keyboard=True).add(
-    KeyboardButton("Русский"),
-    KeyboardButton("Polski"),
-)
-
-# Клавиатура для выбора типа вагона
-wagon_type_keyboard = ReplyKeyboardMarkup(resize_keyboard=True).add(
-    KeyboardButton("P3"),
-    KeyboardButton("P4"),
-    KeyboardButton("P5"),
-    KeyboardButton("Назад")
-)
-
-# Клавиатура для возврата назад
-back_keyboard = ReplyKeyboardMarkup(resize_keyboard=True).add(
-    KeyboardButton("Назад")
-)
-
-# Хранение информации о вагонах (на время работы)
-wagons = {
-    "P3": ["117-5 (1/3)", "118-6 (2/3)"],
-    "P4": ["120-1 (0/3)", "121-2 (1/3)"],
-    "P5": ["122-7 (0/3)", "123-3 (1/3)"]
+# — Тексты (локализация)
+LANGS = {
+    "ru": {
+        "choose_language": "Выберите язык / Wybierz język",
+        "choose_type": "Выберите тип ремонта:",
+        "back": "⬅ Назад",
+        "choose_wagon": "Вагоны типа {type}:",
+        "defects_list": "Поломки вагона {number}:",
+        "done": "Отмечено как выполнено",
+        "add_help": "Добавить вагон: /add_wagon <номер> <тип>\nДобавить поломку: /add_defect <номер> <описание>",
+        "change_language": "Сменить язык"
+    },
+    "pl": {
+        "choose_language": "Wybierz język / Выберите язык",
+        "choose_type": "Wybierz typ naprawy:",
+        "back": "⬅ Powrót",
+        "choose_wagon": "Wagony typu {type}:",
+        "defects_list": "Usterki wagonu {number}:",
+        "done": "Oznaczono jako naprawione",
+        "add_help": "Dodaj wagon: /add_wagon <numer> <typ>\nDodaj usterkę: /add_defect <numer> <opis>",
+        "change_language": "Zmień język"
+    }
 }
 
-# Функция выбора языка
-@dp.message_handler(commands=['start'])
-async def start(message: types.Message):
-    await message.reply("Привет! Выберите язык / Change language.", reply_markup=main_keyboard)
+# — Хранилище выбора языка пользователей
+user_lang: dict[int, str] = {}
 
-# Функция смены языка
-@dp.message_handler(lambda message: message.text in ['Русский', 'Polski'])
-async def set_language(message: types.Message):
-    language = message.text
-    if language == 'Русский':
-        await message.reply("Вы выбрали русский язык.", reply_markup=wagon_type_keyboard)
-    else:
-        await message.reply("Вы wybrali język polski.", reply_markup=wagon_type_keyboard)
+# — Инициализация бота и диспетчера
+bot = Bot(
+    token=config.BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+dp = Dispatcher()
 
-# Функция выбора типа вагона (P3, P4, P5)
-@dp.message_handler(lambda message: message.text in ['P3', 'P4', 'P5'])
-async def choose_wagon(message: types.Message):
-    wagon_type = message.text
-    wagons_list = "\n".join(wagons[wagon_type])
-    await message.reply(f"Список вагонов типа {wagon_type}:\n{wagons_list}", reply_markup=back_keyboard)
+# — Сброс старого вебхука и создание БД
+async def on_startup(_):
+    logger.info("Инициализация базы данных...")
+    await database.init_db()
+    # Устанавливаем вебхук
+    await bot.set_webhook(config.WEBHOOK_URL)
 
-# Обработка кнопки назад
-@dp.message_handler(lambda message: message.text == "Назад")
-async def go_back(message: types.Message):
-    await message.reply("Выберите язык / Choose language.", reply_markup=main_keyboard)
+# — Очистка вебхука при остановке
+async def on_shutdown(_):
+    logger.warning("Завершаем работу, удаляем вебхук...")
+    await bot.delete_webhook(drop_pending_updates=True)
 
-# Функция для обработки конкретного вагона
-@dp.message_handler(lambda message: message.text in [wagon.split(' ')[0] for wagon_list in wagons.values() for wagon in wagon_list])
-async def wagon_details(message: types.Message):
-    wagon_id = message.text
-    for wagon_type, wagon_list in wagons.items():
-        for wagon in wagon_list:
-            if wagon.startswith(wagon_id):
-                parts = wagon.split(' ')
-                broken_parts = parts[1]  # Поломки, например (1/3)
-                await message.reply(f"Вагон: {wagon_id}\nПоломки: {broken_parts}\nОтметьте, если работа выполнена.", reply_markup=back_keyboard)
+# — Команда /start — выбор языка
+@dp.message(F.text == "/start")
+async def cmd_start(message: types.Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("Русский", callback_data="lang_ru")],
+        [InlineKeyboardButton("Polski", callback_data="lang_pl")],
+    ])
+    await message.answer(
+        LANGS["ru"]["choose_language"],
+        reply_markup=kb
+    )
 
-# Обработка отметки о выполнении работы
-@dp.message_handler(lambda message: message.text == 'Сделано')
-async def mark_done(message: types.Message):
-    done_date = "2025-05-06"  # Можем использовать дату выполнения работы
-    done_worker = message.from_user.full_name  # Имя пользователя, который выполнил
-    await message.reply(f"Работа выполнена!\nДата: {done_date}\nИсполнитель: {done_worker}", reply_markup=back_keyboard)
+# — Переключение языка
+@dp.callback_query(F.data.startswith("lang_"))
+async def set_language(callback: types.CallbackQuery):
+    lang = callback.data.split("_", 1)[1]
+    user_lang[callback.from_user.id] = lang
+    # Показать меню выбора типа
+    await show_main_menu(callback.message, callback.from_user.id)
+    await callback.answer()
 
-if __name__ == '__main__':
-    from aiogram.utils import executor
-    executor.start_polling(dp, skip_updates=True)
+# — Меню: выбор типа ремонта
+async def show_main_menu(message: types.Message, user_id: int):
+    lang = user_lang.get(user_id, "ru")
+    text = LANGS[lang]["choose_type"]
+    if user_id in config.ADMIN_IDS:
+        text += "\n\n" + LANGS[lang]["add_help"]
+    kb = InlineKeyboardMarkup()
+    for t in config.REPAIR_TYPES:
+        kb.add(InlineKeyboardButton(t, callback_data=f"type_{t}"))
+    kb.add(InlineKeyboardButton(LANGS[lang]["change_language"], callback_data="lang_select"))
+    await message.answer(text, reply_markup=kb)
+
+@dp.callback_query(F.data == "lang_select")
+async def lang_select(callback: types.CallbackQuery):
+    # вернемся к выбору языка
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("Русский", callback_data="lang_ru")],
+        [InlineKeyboardButton("Polski", callback_data="lang_pl")],
+    ])
+    await callback.message.edit_text(
+        LANGS["ru"]["choose_language"],
+        reply_markup=kb
+    )
+    await callback.answer()
+
+# — Список вагонов по типу
+@dp.callback_query(F.data.startswith("type_"))
+async def show_wagons(callback: types.CallbackQuery):
+    t = callback.data.split("_", 1)[1]
+    lang = user_lang.get(callback.from_user.id, "ru")
+    rows = await database.get_wagons_by_type(t)
+    kb = InlineKeyboardMarkup()
+    for wid, number in rows:
+        defects = await database.get_defects_by_wagon(wid)
+        total = len(defects)
+        done = sum(1 for d in defects if d[2] == "done")
+        kb.add(InlineKeyboardButton(
+            f"{html.escape(number)} ({done}/{total})",
+            callback_data=f"wagon_{wid}"
+        ))
+    kb.add(InlineKeyboardButton(LANGS[lang]["back"], callback_data="main_menu"))
+    await callback.message.edit_text(
+        LANGS[lang]["choose_wagon"].format(type=html.escape(t)),
+        reply_markup=kb
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "main_menu")
+async def back_main(callback: types.CallbackQuery):
+    await show_main_menu(callback.message, callback.from_user.id)
+    await callback.answer()
+
+# — Поломки конкретного вагона
+@dp.callback_query(F.data.startswith("wagon_"))
+async def show_defects(callback: types.CallbackQuery):
+    wid = int(callback.data.split("_", 1)[1])
+    lang = user_lang.get(callback.from_user.id, "ru")
+    number = await database.get_wagon_number(wid) or "–"
+    defects = await database.get_defects_by_wagon(wid)
+
+    msg = LANGS[lang]["defects_list"].format(number=html.escape(number)) + "\n\n"
+    kb = InlineKeyboardMarkup()
+    for did, desc, status, done_by, done_at in defects:
+        status_txt = "✔" if status == "done" else "✖"
+        note = f" ({html.escape(done_by)}, {done_at})" if status == "done" else ""
+        msg += f"{did}. {html.escape(desc)} — {status_txt}{note}\n"
+        if status != "done":
+            kb.add(InlineKeyboardButton(
+                f"✅ {html.escape(desc)}",
+                callback_data=f"done_{did}"
+            ))
+    kb.add(InlineKeyboardButton(LANGS[lang]["back"], callback_data="type_back"))
+    await callback.message.edit_text(msg, reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data == "type_back")
+async def back_to_types(callback: types.CallbackQuery):
+    # просто покажем главное меню (типы)
+    await show_main_menu(callback.message, callback.from_user.id)
+    await callback.answer()
+
+# — Отметить поломку сделанной
+@dp.callback_query(F.data.startswith("done_"))
+async def mark_done(callback: types.CallbackQuery):
+    did = int(callback.data.split("_", 1)[1])
+    await database.mark_defect_done(did, callback.from_user.full_name)
+    lang = user_lang.get(callback.from_user.id, "ru")
+    await callback.answer(LANGS[lang]["done"])
+    # вернём пользователя в главное меню
+    await show_main_menu(callback.message, callback.from_user.id)
+
+# — Админ: добавить вагон
+@dp.message(F.text.startswith("/add_wagon"))
+async def cmd_add_wagon(message: types.Message):
+    if message.from_user.id not in config.ADMIN_IDS:
+        return await message.reply("Нет доступа.")
+    parts = message.text.split()
+    if len(parts) != 3 or parts[2] not in config.REPAIR_TYPES:
+        return await message.reply("Формат: /add_wagon <номер> <тип> (P3, P4, P5)")
+    await database.add_wagon(parts[1], parts[2])
+    await message.reply(f"Вагон {parts[1]} ({parts[2]}) добавлен.")
+
+# — Админ: добавить поломку
+@dp.message(F.text.startswith("/add_defect"))
+async def cmd_add_defect(message: types.Message):
+    if message.from_user.id not in config.ADMIN_IDS:
+        return await message.reply("Нет доступа.")
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        return await message.reply("Формат: /add_defect <номер_вагона> <описание>")
+    ok = await database.add_defect(parts[1], parts[2])
+    if not ok:
+        return await message.reply("Вагон не найден.")
+    await message.reply("Поломка добавлена.")
+
+# — Запуск
+if __name__ == "__main__":
+    start_webhook(
+        dispatcher=dp,
+        webhook_path=config.WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 8080)),
+    )
