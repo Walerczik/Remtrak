@@ -1,72 +1,82 @@
-import sqlite3
-from sqlite3 import Error
+import aiosqlite
+from datetime import date
 
-# Подключение к базе данных
-def create_connection():
-    conn = None
-    try:
-        conn = sqlite3.connect('wagon_repair.db')
-    except Error as e:
-        print(e)
-    return conn
+DATABASE = "wagons.db"
 
-# Создание таблиц
-def create_tables():
-    conn = create_connection()
-    cursor = conn.cursor()
+async def init_db():
+    async with aiosqlite.connect(DATABASE) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS wagons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                number TEXT UNIQUE NOT NULL,
+                type TEXT NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS defects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                wagon_id INTEGER NOT NULL,
+                description TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                done_by TEXT,
+                done_at TEXT,
+                FOREIGN KEY(wagon_id) REFERENCES wagons(id)
+            )
+        """)
+        await db.commit()
 
-    # Таблица для вагона и поломок
-    cursor.execute('''CREATE TABLE IF NOT EXISTS wagons (
-                        id INTEGER PRIMARY KEY,
-                        wagon_number TEXT NOT NULL,
-                        type TEXT NOT NULL)''')
-    
-    # Таблица для поломок
-    cursor.execute('''CREATE TABLE IF NOT EXISTS faults (
-                        id INTEGER PRIMARY KEY,
-                        wagon_id INTEGER,
-                        fault_description TEXT,
-                        status BOOLEAN DEFAULT 0,
-                        completed_by TEXT,
-                        completed_at DATETIME,
-                        FOREIGN KEY (wagon_id) REFERENCES wagons (id))''')
-    
-    conn.commit()
-    conn.close()
+async def add_wagon(number: str, wtype: str):
+    async with aiosqlite.connect(DATABASE) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO wagons (number, type) VALUES (?, ?)",
+            (number, wtype)
+        )
+        await db.commit()
 
-# Функция для добавления вагона
-def add_wagon(wagon_number, type_):
-    conn = create_connection()
-    cursor = conn.cursor()
-    cursor.execute('''INSERT INTO wagons (wagon_number, type) VALUES (?, ?)''', (wagon_number, type_))
-    conn.commit()
-    conn.close()
+async def get_wagons_by_type(wtype: str):
+    async with aiosqlite.connect(DATABASE) as db:
+        return await db.execute_fetchall(
+            "SELECT id, number FROM wagons WHERE type = ?",
+            (wtype,)
+        )
 
-# Функция для добавления поломки
-def add_fault(wagon_id, fault_description):
-    conn = create_connection()
-    cursor = conn.cursor()
-    cursor.execute('''INSERT INTO faults (wagon_id, fault_description) VALUES (?, ?)''', (wagon_id, fault_description))
-    conn.commit()
-    conn.close()
+async def add_defect(wagon_number: str, description: str) -> bool:
+    async with aiosqlite.connect(DATABASE) as db:
+        row = await db.execute_fetchone(
+            "SELECT id FROM wagons WHERE number = ?",
+            (wagon_number,)
+        )
+        if not row:
+            return False
+        wid = row[0]
+        await db.execute(
+            "INSERT INTO defects (wagon_id, description) VALUES (?, ?)",
+            (wid, description)
+        )
+        await db.commit()
+        return True
 
-# Функция для получения всех поломок для вагона
-def get_faults(wagon_id):
-    conn = create_connection()
-    cursor = conn.cursor()
-    cursor.execute('''SELECT * FROM faults WHERE wagon_id = ?''', (wagon_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
+async def get_defects_by_wagon(wagon_id: int):
+    async with aiosqlite.connect(DATABASE) as db:
+        return await db.execute_fetchall("""
+            SELECT id, description, status, done_by, done_at
+              FROM defects WHERE wagon_id = ?
+        """, (wagon_id,))
 
-# Функция для обновления статуса поломки
-def mark_fault_done(fault_id, completed_by):
-    conn = create_connection()
-    cursor = conn.cursor()
-    cursor.execute('''UPDATE faults SET status = 1, completed_by = ?, completed_at = ? WHERE id = ?''',
-                   (completed_by, sqlite3.datetime.datetime.now(), fault_id))
-    conn.commit()
-    conn.close()
+async def mark_defect_done(defect_id: int, user_fullname: str):
+    today = date.today().isoformat()
+    async with aiosqlite.connect(DATABASE) as db:
+        await db.execute("""
+            UPDATE defects
+               SET status = 'done', done_by = ?, done_at = ?
+             WHERE id = ?
+        """, (user_fullname, today, defect_id))
+        await db.commit()
 
-# Вызов функции для создания таблиц при старте
-create_tables()
+async def get_wagon_number(wagon_id: int) -> str | None:
+    async with aiosqlite.connect(DATABASE) as db:
+        row = await db.execute_fetchone(
+            "SELECT number FROM wagons WHERE id = ?",
+            (wagon_id,)
+        )
+        return row[0] if row else None
